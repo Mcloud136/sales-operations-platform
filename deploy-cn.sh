@@ -342,42 +342,88 @@ configure_postgresql() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 4: Install Valkey 9.1 from official repository
+# Step 4: Install Valkey 9.1 from source (GitHub release)
 # ---------------------------------------------------------------------------
 install_valkey() {
-    info "Installing Valkey ${VALKEY_VERSION}..."
+    info "Installing Valkey ${VALKEY_VERSION} (source build)..."
 
     if valkey-server --version 2>/dev/null | grep -q "valkey-server.*v=${VALKEY_VERSION}"; then
         info "Valkey ${VALKEY_VERSION} already installed"
         return
     fi
 
+    # Install build dependencies
     case "${PKG_MANAGER}" in
         apt)
-            # Install Valkey apt repository
-            pkg_install_no_update curl ca-certificates gnupg lsb-release
-            curl -fsSL https://packages.valkey.io/gpg \
-                | gpg --batch --dearmor --yes -o /usr/share/keyrings/valkey-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/valkey-keyring.gpg] \
-https://packages.valkey.io/apt $(lsb_release -cs) main" \
-                > /etc/apt/sources.list.d/valkey.list
-            apt-get update -qq
-            apt-get install -y "valkey-server=${VALKEY_VERSION}-1" "valkey-tools"
-            echo "valkey-server hold" | dpkg --set-selections
+            pkg_install_no_update build-essential pkg-config
             ;;
         dnf)
-            curl -fsSL https://packages.valkey.io/rpm/valkey.repo \
-                > /etc/yum.repos.d/valkey.repo
-            dnf install -y "valkey-${VALKEY_VERSION}" "valkey-tools"
+            pkg_install_no_update gcc make pkg-config
             ;;
     esac
 
+    # Download and build from source
+    local src_dir="/tmp/valkey-${VALKEY_VERSION}"
+    local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
+
+    if [[ ! -f "${tarball}" ]]; then
+        curl -fsSL "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+            -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source"
+    fi
+
+    rm -rf "${src_dir}"
+    tar -xzf "${tarball}" -C /tmp
+    # GitHub archive extracts to valkey-VERSION/
+    if [[ ! -d "${src_dir}" ]]; then
+        # Try alternate extraction path
+        src_dir=$(find /tmp -maxdepth 1 -name "valkey-*${VALKEY_VERSION}*" -type d | head -1)
+    fi
+
+    cd "${src_dir}"
+    make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5
+    make install PREFIX=/usr/local
+
+    # Create valkey user
+    if ! id valkey &>/dev/null; then
+        useradd -r -m -d /var/lib/valkey -s /usr/sbin/nologin -c "Valkey Server" valkey
+    fi
+
+    # Create directories
+    mkdir -p /etc/valkey /var/lib/valkey /var/log/valkey "${VALKEY_SOCK_DIR}"
+    chown -R valkey:valkey /var/lib/valkey /var/log/valkey
+
+    # Symlink binaries
+    ln -sf /usr/local/bin/valkey-server /usr/local/bin/valkey-server
+    ln -sf /usr/local/bin/valkey-cli /usr/local/bin/valkey-cli
+
+    # Create systemd service
+    cat > /etc/systemd/system/valkey-server.service <<'VKEY_SERVICE'
+[Unit]
+Description=Valkey In-Memory Data Store
+After=network.target
+
+[Service]
+Type=notify
+User=valkey
+Group=valkey
+ExecStart=/usr/local/bin/valkey-server /etc/valkey/valkey.conf
+ExecStop=/usr/local/bin/valkey-cli -p 6379 shutdown
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+RuntimeDirectory=valkey
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+VKEY_SERVICE
+
+    cd /
+    rm -rf "${src_dir}" "${tarball}"
+
     # Configure Valkey
     local valkey_conf="/etc/valkey/valkey.conf"
-    if [[ ! -f "${valkey_conf}" ]]; then
-        valkey_conf="/etc/valkey/valkey.conf"
-        mkdir -p /etc/valkey
-    fi
+    mkdir -p /etc/valkey
 
     cat > "${valkey_conf}" <<'VAKEY_EOF'
 # Valkey configuration - Sales Operations Platform
