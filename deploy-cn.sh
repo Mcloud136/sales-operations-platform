@@ -371,16 +371,21 @@ install_valkey() {
             -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from Gitee mirror"
     fi
 
-    rm -rf "${src_dir}"
+    # Clean up any previous extraction
+    rm -rf /tmp/valkey-*
     tar -xzf "${tarball}" -C /tmp
-    # GitHub archive extracts to valkey-VERSION/
-    if [[ ! -d "${src_dir}" ]]; then
-        # Try alternate extraction path
-        src_dir=$(find /tmp -maxdepth 1 -name "valkey-*${VALKEY_VERSION}*" -type d | head -1)
+
+    # Find extracted directory (Gitee mirrors may use different naming)
+    src_dir=$(find /tmp -maxdepth 1 -type d -name "valkey*" ! -name "*.tar.gz" | head -1)
+    if [[ -z "${src_dir}" || ! -f "${src_dir}/src/Makefile" ]]; then
+        # List what's in /tmp for debugging
+        ls -la /tmp/valkey* 2>/dev/null
+        die "Valkey source directory not found or missing Makefile after extraction"
     fi
+    info "Valkey source found at: ${src_dir}"
 
     cd "${src_dir}"
-    make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5
+    make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5 || die "Valkey compilation failed"
     make install PREFIX=/usr/local
 
     # Create valkey user
