@@ -55,9 +55,10 @@ PG_MAJOR="18"
 VALKEY_VERSION="9.1.0"
 
 # 国内镜像源
-# PostgreSQL: 官方源在国内可直接访问，Tsinghua 镜像已停更（2024-03）
+# PostgreSQL: try multiple sources for GPG key and APT repo
 MIRROR_PG_APT="https://apt.postgresql.org/pub/repos/apt"
 MIRROR_PG_KEY="https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+MIRROR_PG_KEY_FALLBACK="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/ACCC4CF8.asc"
 MIRROR_APT="https://mirrors.aliyun.com"
 MIRROR_NGINX="https://mirrors.aliyun.com/nginx"
 MIRROR_PYTHON_SRC="https://mirrors.huaweicloud.com/python"
@@ -268,20 +269,32 @@ install_postgresql() {
         apt)
             # Add PostgreSQL official APT repository
             pkg_install_no_update curl ca-certificates gnupg lsb-release
-            curl -fsSL "${MIRROR_PG_KEY}" \
-                | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg
+
+            # Download GPG key with fallback
+            if ! curl -fsSL "${MIRROR_PG_KEY}" \
+                | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg 2>/dev/null; then
+                warn "Primary GPG key URL failed, trying fallback..."
+                curl -fsSL "${MIRROR_PG_KEY_FALLBACK}" \
+                    | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg \
+                    || die "Failed to download PostgreSQL GPG key from all sources"
+            fi
+
             echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] \
 ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
                 > /etc/apt/sources.list.d/pgdg.list
             apt-get update -qq
+
+            # Verify pgdg source is available
+            if ! apt-cache show "postgresql-${PG_MAJOR}" &>/dev/null; then
+                die "PostgreSQL ${PG_MAJOR} not found in APT. pgdg repo may be unreachable. Check: cat /etc/apt/sources.list.d/pgdg.list"
+            fi
+
             # Install PG major version (no exact version pin — auto latest patch)
             apt-get install -y "postgresql-${PG_MAJOR}" \
-                "postgresql-${PG_MAJOR}-server" \
                 "postgresql-client-${PG_MAJOR}" \
                 "postgresql-server-dev-${PG_MAJOR}"
             # Prevent auto-upgrades to next major version
             echo "postgresql-${PG_MAJOR} hold" | dpkg --set-selections
-            echo "postgresql-${PG_MAJOR}-server hold" | dpkg --set-selections
             ;;
         dnf)
             # Install PostgreSQL yum repository (direct, no good Chinese mirror for PG RPM)
