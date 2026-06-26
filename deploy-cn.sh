@@ -58,10 +58,10 @@ VALKEY_VERSION="9.1.0"
 # 国内镜像源
 MIRROR_PG_APT="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt"
 MIRROR_PG_KEY="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/ACCC4CF8.asc"
+MIRROR_APT="https://mirrors.aliyun.com"
 MIRROR_NGINX="https://mirrors.aliyun.com/nginx"
 MIRROR_PYTHON_SRC="https://mirrors.huaweicloud.com/python"
 MIRROR_PIP="https://mirrors.aliyun.com/pypi/simple"
-MIRROR_ALIBABA_PIP="https://mirrors.aliyun.com/pypi/simple"
 
 # Colors for output
 RED='\033[0;31m'
@@ -207,10 +207,10 @@ configure_mirrors() {
             local codename
             codename=$(lsb_release -cs)
             cat > /etc/apt/sources.list <<APT_EOF
-deb ${MIRROR_NGINX%/}/ubuntu ${codename} main restricted universe multiverse
-deb ${MIRROR_NGINX%/}/ubuntu ${codename}-updates main restricted universe multiverse
-deb ${MIRROR_NGINX%/}/ubuntu ${codename}-security main restricted universe multiverse
-deb ${MIRROR_NGINX%/}/ubuntu ${codename}-backports main restricted universe multiverse
+deb ${MIRROR_APT}/ubuntu ${codename} main restricted universe multiverse
+deb ${MIRROR_APT}/ubuntu ${codename}-updates main restricted universe multiverse
+deb ${MIRROR_APT}/ubuntu ${codename}-security main restricted universe multiverse
+deb ${MIRROR_APT}/ubuntu ${codename}-backports main restricted universe multiverse
 APT_EOF
             info "APT sources configured (Aliyun mirror)"
             ;;
@@ -246,7 +246,7 @@ install_postgresql() {
             # Install from Tsinghua mirror
             pkg_install_no_update curl ca-certificates gnupg lsb-release
             curl -fsSL "${MIRROR_PG_KEY}" \
-                | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
+                | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] \
 ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
                 > /etc/apt/sources.list.d/pgdg.list
@@ -320,7 +320,7 @@ install_valkey() {
             # Install Valkey apt repository
             pkg_install_no_update curl ca-certificates gnupg lsb-release
             curl -fsSL https://packages.valkey.io/gpg \
-                | gpg --dearmor -o /usr/share/keyrings/valkey-keyring.gpg
+                | gpg --batch --dearmor --yes -o /usr/share/keyrings/valkey-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/valkey-keyring.gpg] \
 https://packages.valkey.io/apt $(lsb_release -cs) main" \
                 > /etc/apt/sources.list.d/valkey.list
@@ -423,7 +423,7 @@ install_nginx() {
         apt)
             pkg_install_no_update curl ca-certificates gnupg lsb-release
             curl -fsSL https://nginx.org/keys/nginx_signing.key \
-                | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+                | gpg --batch --dearmor --yes -o /usr/share/keyrings/nginx-archive-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
 ${MIRROR_NGINX}/ubuntu $(lsb_release -cs) nginx" \
                 > /etc/apt/sources.list.d/nginx.list
