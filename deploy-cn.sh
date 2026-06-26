@@ -48,9 +48,8 @@ CSRF_COOKIE_SECURE="False"
 GITEE_REPO="${GITEE_REPO:-sales-operations-platform}"
 GITEE_OWNER="${GITEE_OWNER:-wxbns}"
 
-# PostgreSQL pinned version
+# PostgreSQL pinned major version (auto-installs latest patch)
 PG_MAJOR="18"
-PG_VERSION="18.4"
 
 # Valkey pinned version
 VALKEY_VERSION="9.1.0"
@@ -255,10 +254,10 @@ APT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# Step 2: Install PostgreSQL 18 from Tsinghua mirror
+# Step 2: Install PostgreSQL 18 from official repository
 # ---------------------------------------------------------------------------
 install_postgresql() {
-    info "Installing PostgreSQL ${PG_VERSION} (Tsinghua mirror)..."
+    info "Installing PostgreSQL ${PG_MAJOR} (official APT repo)..."
 
     if command -v psql &>/dev/null && psql --version | grep -q "psql (PostgreSQL) ${PG_MAJOR}"; then
         info "PostgreSQL ${PG_MAJOR} already installed"
@@ -267,7 +266,7 @@ install_postgresql() {
 
     case "${PKG_MANAGER}" in
         apt)
-            # Install from Tsinghua mirror
+            # Add PostgreSQL official APT repository
             pkg_install_no_update curl ca-certificates gnupg lsb-release
             curl -fsSL "${MIRROR_PG_KEY}" \
                 | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg
@@ -275,12 +274,12 @@ install_postgresql() {
 ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
                 > /etc/apt/sources.list.d/pgdg.list
             apt-get update -qq
-            # Pin to exact version
-            apt-get install -y "postgresql-${PG_MAJOR}=${PG_VERSION}-1" \
-                "postgresql-${PG_MAJOR}-server=${PG_VERSION}-1" \
+            # Install PG major version (no exact version pin — auto latest patch)
+            apt-get install -y "postgresql-${PG_MAJOR}" \
+                "postgresql-${PG_MAJOR}-server" \
                 "postgresql-client-${PG_MAJOR}" \
                 "postgresql-server-dev-${PG_MAJOR}"
-            # Prevent auto-upgrades
+            # Prevent auto-upgrades to next major version
             echo "postgresql-${PG_MAJOR} hold" | dpkg --set-selections
             echo "postgresql-${PG_MAJOR}-server hold" | dpkg --set-selections
             ;;
@@ -289,7 +288,7 @@ ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
             pkg_install_no_update curl
             dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-$(rpm --eval '%rhel')-x86_64/pgdg-redhat-repo-latest.noarch.rpm
             dnf -qy module disable postgresql
-            dnf install -y "postgresql${PG_MAJOR}-server-${PG_VERSION}" \
+            dnf install -y "postgresql${PG_MAJOR}-server" \
                 "postgresql${PG_MAJOR}-contrib" \
                 "postgresql${PG_MAJOR}-devel"
             ;;
@@ -299,9 +298,11 @@ ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
     systemctl enable postgresql
     systemctl start postgresql
 
-    # Record version
-    echo "postgresql=${PG_VERSION}" >> "${VERSION_MANIFEST}"
-    info "PostgreSQL ${PG_VERSION} installed"
+    # Record installed version
+    local installed_pg_version
+    installed_pg_version=$(psql --version | grep -oP '\d+\.\d+' | head -1)
+    echo "postgresql=${installed_pg_version}" >> "${VERSION_MANIFEST}"
+    info "PostgreSQL ${installed_pg_version} installed"
 }
 
 # ---------------------------------------------------------------------------
@@ -1156,7 +1157,7 @@ print_summary() {
     echo "  App Dir:      ${APP_DIR}"
     echo "  Release:      $(readlink "${CURRENT_LINK}")"
     echo "  Gitee Repo:   https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}"
-    echo "  PostgreSQL:   ${PG_VERSION} (Tsinghua mirror)"
+    echo "  PostgreSQL:   $(psql --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo 'N/A')"
     echo "  Valkey:       ${VALKEY_VERSION}"
     echo "  Nginx:        Aliyun mirror"
     echo "  Python:       $(python3.13 --version 2>&1)"
