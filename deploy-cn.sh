@@ -289,10 +289,9 @@ ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
                 die "PostgreSQL ${PG_MAJOR} not found in APT. pgdg repo may be unreachable. Check: cat /etc/apt/sources.list.d/pgdg.list"
             fi
 
-            # Install PG major version (no exact version pin — auto latest patch)
+            # Install PG major version
             apt-get install -y "postgresql-${PG_MAJOR}" \
-                "postgresql-client-${PG_MAJOR}" \
-                "postgresql-server-dev-${PG_MAJOR}"
+                "postgresql-client-${PG_MAJOR}"
             # Prevent auto-upgrades to next major version
             echo "postgresql-${PG_MAJOR} hold" | dpkg --set-selections
             ;;
