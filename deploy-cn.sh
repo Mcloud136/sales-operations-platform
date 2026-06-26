@@ -56,8 +56,9 @@ PG_VERSION="18.4"
 VALKEY_VERSION="9.1.0"
 
 # 国内镜像源
-MIRROR_PG_APT="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt"
-MIRROR_PG_KEY="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/ACCC4CF8.asc"
+# PostgreSQL: 官方源在国内可直接访问，Tsinghua 镜像已停更（2024-03）
+MIRROR_PG_APT="https://apt.postgresql.org/pub/repos/apt"
+MIRROR_PG_KEY="https://www.postgresql.org/media/keys/ACCC4CF8.asc"
 MIRROR_APT="https://mirrors.aliyun.com"
 MIRROR_NGINX="https://mirrors.aliyun.com/nginx"
 MIRROR_PYTHON_SRC="https://mirrors.huaweicloud.com/python"
