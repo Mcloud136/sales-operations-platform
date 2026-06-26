@@ -214,6 +214,13 @@ configure_mirrors() {
 
                 # Replace URIs lines with Aliyun mirror
                 sed -i "s|^URIs:.*|URIs: ${MIRROR_APT}/ubuntu|g" "${sources_file}"
+
+                # Disable legacy sources.list to avoid "configured multiple times" warnings
+                if [[ -f /etc/apt/sources.list && ! -f /etc/apt/sources.list.disabled ]]; then
+                    cp /etc/apt/sources.list /etc/apt/sources.list.disabled
+                    : > /etc/apt/sources.list
+                fi
+
                 info "APT sources configured (Aliyun mirror, DEB822 format)"
             elif [[ -f /etc/apt/sources.list ]]; then
                 # Legacy format (Ubuntu 22.04 and older)
