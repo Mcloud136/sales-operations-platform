@@ -57,7 +57,7 @@ VALKEY_VERSION="9.1.0"
 
 # 国内镜像源
 MIRROR_PG_APT="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt"
-MIRROR_PG_KEY="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/keys/ACCC4CF8.asc"
+MIRROR_PG_KEY="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/ACCC4CF8.asc"
 MIRROR_NGINX="https://mirrors.aliyun.com/nginx"
 MIRROR_PYTHON_SRC="https://mirrors.huaweicloud.com/python"
 MIRROR_PIP="https://mirrors.aliyun.com/pypi/simple"
