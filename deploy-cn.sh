@@ -363,26 +363,39 @@ install_valkey() {
     esac
 
     # Download and build from source
-    local src_dir="/tmp/valkey-${VALKEY_VERSION}"
     local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
+    local src_dir=""
 
     if [[ ! -f "${tarball}" ]]; then
-        curl -fsSL "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-            -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from Gitee mirror"
+        info "Downloading Valkey ${VALKEY_VERSION} source from Gitee mirror..."
+        curl -fSL --connect-timeout 30 --max-time 300 \
+            "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+            -o "${tarball}" || {
+            warn "Gitee mirror download failed, trying GitHub..."
+            curl -fSL --connect-timeout 30 --max-time 300 \
+                "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+                -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from all mirrors"
+        }
+    fi
+
+    # Verify downloaded file is a valid tarball (not HTML error page)
+    if ! file "${tarball}" | grep -qi "gzip\|tar"; then
+        rm -f "${tarball}"
+        head -5 "${tarball}" 2>/dev/null
+        die "Downloaded file is not a valid tarball. Check URL or network."
     fi
 
     # Clean up any previous extraction
-    rm -rf /tmp/valkey-*
-    tar -xzf "${tarball}" -C /tmp
+    rm -rf /tmp/valkey-build-*
+    mkdir -p /tmp/valkey-build-${VALKEY_VERSION}
+    tar -xzf "${tarball}" -C /tmp/valkey-build-${VALKEY_VERSION} --strip-components=1
 
-    # Find extracted directory (Gitee mirrors may use different naming)
-    src_dir=$(find /tmp -maxdepth 1 -type d -name "valkey*" ! -name "*.tar.gz" | head -1)
-    if [[ -z "${src_dir}" || ! -f "${src_dir}/src/Makefile" ]]; then
-        # List what's in /tmp for debugging
-        ls -la /tmp/valkey* 2>/dev/null
-        die "Valkey source directory not found or missing Makefile after extraction"
+    src_dir="/tmp/valkey-build-${VALKEY_VERSION}"
+    if [[ ! -f "${src_dir}/src/Makefile" ]]; then
+        ls -la "${src_dir}/" 2>/dev/null
+        die "Valkey source missing Makefile after extraction"
     fi
-    info "Valkey source found at: ${src_dir}"
+    info "Valkey source extracted to: ${src_dir}"
 
     cd "${src_dir}"
     make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5 || die "Valkey compilation failed"
@@ -424,7 +437,7 @@ WantedBy=multi-user.target
 VKEY_SERVICE
 
     cd /
-    rm -rf "${src_dir}" "${tarball}"
+    rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
 
     # Configure Valkey
     local valkey_conf="/etc/valkey/valkey.conf"
