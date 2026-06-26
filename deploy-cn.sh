@@ -199,21 +199,37 @@ configure_mirrors() {
 
     case "${PKG_MANAGER}" in
         apt)
-            # Backup original sources
-            if [[ ! -f /etc/apt/sources.list.bak ]]; then
-                cp /etc/apt/sources.list /etc/apt/sources.list.bak
-            fi
-
-            # Configure Aliyun APT mirror
             local codename
             codename=$(lsb_release -cs)
-            cat > /etc/apt/sources.list <<APT_EOF
+
+            # Ubuntu 24.04+ uses DEB822 format: /etc/apt/sources.list.d/ubuntu.sources
+            # Older Ubuntu uses legacy format: /etc/apt/sources.list
+            if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+                # DEB822 format (Ubuntu 24.04+)
+                local sources_file="/etc/apt/sources.list.d/ubuntu.sources"
+                local backup="${sources_file}.bak"
+                if [[ ! -f "${backup}" ]]; then
+                    cp "${sources_file}" "${backup}"
+                fi
+
+                # Replace URIs lines with Aliyun mirror
+                sed -i "s|^URIs:.*|URIs: ${MIRROR_APT}/ubuntu|g" "${sources_file}"
+                info "APT sources configured (Aliyun mirror, DEB822 format)"
+            elif [[ -f /etc/apt/sources.list ]]; then
+                # Legacy format (Ubuntu 22.04 and older)
+                if [[ ! -f /etc/apt/sources.list.bak ]]; then
+                    cp /etc/apt/sources.list /etc/apt/sources.list.bak
+                fi
+                cat > /etc/apt/sources.list <<APT_EOF
 deb ${MIRROR_APT}/ubuntu ${codename} main restricted universe multiverse
 deb ${MIRROR_APT}/ubuntu ${codename}-updates main restricted universe multiverse
 deb ${MIRROR_APT}/ubuntu ${codename}-security main restricted universe multiverse
 deb ${MIRROR_APT}/ubuntu ${codename}-backports main restricted universe multiverse
 APT_EOF
-            info "APT sources configured (Aliyun mirror)"
+                info "APT sources configured (Aliyun mirror, legacy format)"
+            else
+                warn "No APT sources file found, skipping mirror configuration"
+            fi
             ;;
         dnf)
             # Configure Aliyun YUM mirror
