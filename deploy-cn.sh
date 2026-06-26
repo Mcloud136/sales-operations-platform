@@ -367,8 +367,8 @@ install_valkey() {
     local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
 
     if [[ ! -f "${tarball}" ]]; then
-        curl -fsSL "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-            -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source"
+        curl -fsSL "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+            -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from Gitee mirror"
     fi
 
     rm -rf "${src_dir}"
