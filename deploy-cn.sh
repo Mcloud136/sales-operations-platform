@@ -451,8 +451,11 @@ RuntimeDirectoryMode=0755
 WantedBy=multi-user.target
 VKEY_SERVICE
 
-    cd /
-    rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
+    # Cleanup temp build files (only if we compiled)
+    if [[ "${need_compile}" == "true" ]]; then
+        cd /
+        rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
+    fi
 
     # Configure Valkey
     local valkey_conf="/etc/valkey/valkey.conf"
