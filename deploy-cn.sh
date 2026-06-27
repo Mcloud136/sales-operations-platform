@@ -347,59 +347,74 @@ configure_postgresql() {
 install_valkey() {
     info "Installing Valkey ${VALKEY_VERSION} (source build)..."
 
-    if valkey-server --version 2>/dev/null | grep -q "valkey-server.*v=${VALKEY_VERSION}"; then
-        info "Valkey ${VALKEY_VERSION} already installed"
+    # Check if fully installed (binary + systemd + config)
+    if [[ -f /usr/local/bin/valkey-server ]] && \
+       systemctl -q is-enabled valkey-server 2>/dev/null && \
+       [[ -f /etc/valkey/valkey.conf ]]; then
+        info "Valkey ${VALKEY_VERSION} already installed and configured"
         return
     fi
 
+    # If binary exists but service missing, skip compile and reconfigure
+    local need_compile=true
+    if [[ -f /usr/local/bin/valkey-server ]]; then
+        info "Valkey binary found, skipping compile (reconfiguring only)"
+        need_compile=false
+    fi
+
     # Install build dependencies
-    case "${PKG_MANAGER}" in
-        apt)
-            pkg_install_no_update build-essential pkg-config
-            ;;
-        dnf)
-            pkg_install_no_update gcc make pkg-config
-            ;;
-    esac
+    if [[ "${need_compile}" == "true" ]]; then
+        case "${PKG_MANAGER}" in
+            apt)
+                pkg_install_no_update build-essential pkg-config
+                ;;
+            dnf)
+                pkg_install_no_update gcc make pkg-config
+                ;;
+        esac
 
-    # Download and build from source
-    local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
-    local src_dir=""
+        # Download and build from source
+        local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
+        local src_dir=""
 
-    if [[ ! -f "${tarball}" ]]; then
-        info "Downloading Valkey ${VALKEY_VERSION} source from Gitee mirror..."
-        curl -fSL --connect-timeout 30 --max-time 300 \
-            "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-            -o "${tarball}" || {
-            warn "Gitee mirror download failed, trying GitHub..."
+        if [[ ! -f "${tarball}" ]]; then
+            info "Downloading Valkey ${VALKEY_VERSION} source from Gitee mirror..."
             curl -fSL --connect-timeout 30 --max-time 300 \
-                "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-                -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from all mirrors"
-        }
+                "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+                -o "${tarball}" || {
+                warn "Gitee mirror download failed, trying GitHub..."
+                curl -fSL --connect-timeout 30 --max-time 300 \
+                    "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+                    -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from all mirrors"
+            }
+        fi
+
+        # Verify downloaded file is a valid tarball (not HTML error page)
+        if ! file "${tarball}" | grep -qi "gzip\|tar"; then
+            rm -f "${tarball}"
+            head -5 "${tarball}" 2>/dev/null
+            die "Downloaded file is not a valid tarball. Check URL or network."
+        fi
+
+        # Clean up any previous extraction
+        rm -rf /tmp/valkey-build-*
+        mkdir -p /tmp/valkey-build-${VALKEY_VERSION}
+        tar -xzf "${tarball}" -C /tmp/valkey-build-${VALKEY_VERSION} --strip-components=1
+
+        src_dir="/tmp/valkey-build-${VALKEY_VERSION}"
+        if [[ ! -f "${src_dir}/src/Makefile" ]]; then
+            ls -la "${src_dir}/" 2>/dev/null
+            die "Valkey source missing Makefile after extraction"
+        fi
+        info "Valkey source extracted to: ${src_dir}"
+
+        cd "${src_dir}"
+        make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5 || die "Valkey compilation failed"
+        make install PREFIX=/usr/local
+
+        cd /
+        rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
     fi
-
-    # Verify downloaded file is a valid tarball (not HTML error page)
-    if ! file "${tarball}" | grep -qi "gzip\|tar"; then
-        rm -f "${tarball}"
-        head -5 "${tarball}" 2>/dev/null
-        die "Downloaded file is not a valid tarball. Check URL or network."
-    fi
-
-    # Clean up any previous extraction
-    rm -rf /tmp/valkey-build-*
-    mkdir -p /tmp/valkey-build-${VALKEY_VERSION}
-    tar -xzf "${tarball}" -C /tmp/valkey-build-${VALKEY_VERSION} --strip-components=1
-
-    src_dir="/tmp/valkey-build-${VALKEY_VERSION}"
-    if [[ ! -f "${src_dir}/src/Makefile" ]]; then
-        ls -la "${src_dir}/" 2>/dev/null
-        die "Valkey source missing Makefile after extraction"
-    fi
-    info "Valkey source extracted to: ${src_dir}"
-
-    cd "${src_dir}"
-    make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5 || die "Valkey compilation failed"
-    make install PREFIX=/usr/local
 
     # Create valkey user
     if ! id valkey &>/dev/null; then
