@@ -10,6 +10,13 @@
 #   sudo bash deploy-cn.sh --update           # Update from latest release
 #   sudo bash deploy-cn.sh --rollback <tag>   # Rollback to a specific release
 #
+# Self-clean: remove Windows CRLF line endings that break heredocs
+if [[ -f "$0" ]]; then
+    if grep -qP '\r' "$0" 2>/dev/null; then
+        sed -i 's/\r$//' "$0"
+    fi
+fi
+
 set -euo pipefail
 IFS=$'\n\t'
 
