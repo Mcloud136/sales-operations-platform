@@ -1,8 +1,8 @@
 {
-  "version": "v0.1.0-20260627190832-ffb078b",
-  "source_commit": "ffb078b134d6348b86f0e37cd1b8c975e433a88b",
+  "version": "v0.1.0-20260627201024-0821e25",
+  "source_commit": "0821e250e9da293d7e51cb45598004f4c060260b",
   "source_repo": "Mcloud136/sales-operations-platform-source",
-  "build_date": "2026-06-27T19:08:32Z",
+  "build_date": "2026-06-27T20:10:25Z",
   "runner": "ubuntu-26.04",
   "python_version": "3.13",
   "node_version": "24"

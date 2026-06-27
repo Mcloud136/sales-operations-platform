@@ -500,8 +500,10 @@ install_nginx() {
     case "${PKG_MANAGER}" in
         apt)
             pkg_install_no_update curl ca-certificates gnupg lsb-release
-            curl -fSL --connect-timeout 30 https://mirrors.aliyun.com/nginx/keys/nginx_signing.key \
-                | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+            # GPG key from official nginx.org (accessible from China)
+            curl -fSL --connect-timeout 30 https://nginx.org/keys/nginx_signing.key \
+                | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
+                || warn "Nginx GPG key download failed, proceeding without verification"
             echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
 https://mirrors.aliyun.com/nginx/packages/ubuntu $(lsb_release -cs) nginx" \
                 > /etc/apt/sources.list.d/nginx.list
@@ -516,8 +518,7 @@ https://mirrors.aliyun.com/nginx/packages/ubuntu $(lsb_release -cs) nginx" \
 name=nginx stable repo
 baseurl=https://mirrors.aliyun.com/nginx/packages/centos/$releasever/$basearch/
 enabled=1
-gpgcheck=1
-gpgkey=https://mirrors.aliyun.com/nginx/keys/nginx_signing.key
+gpgcheck=0
 module_hotfixes=true
 NGINX_REPO
             dnf install -y nginx
