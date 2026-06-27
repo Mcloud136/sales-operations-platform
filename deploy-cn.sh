@@ -490,7 +490,7 @@ ACL_EOF
 # Step 5: Install Nginx from Aliyun mirror
 # ---------------------------------------------------------------------------
 install_nginx() {
-    info "Installing Nginx (Aliyun mirror)..."
+    info "Installing Nginx..."
 
     if command -v nginx &>/dev/null && nginx -v 2>&1 | grep -q "nginx version"; then
         info "Nginx already installed"
@@ -500,14 +500,14 @@ install_nginx() {
     case "${PKG_MANAGER}" in
         apt)
             pkg_install_no_update curl ca-certificates gnupg lsb-release
-            # GPG key from official nginx.org (accessible from China)
+            # Use official nginx.org repo (directly accessible from China)
             curl -fSL --connect-timeout 30 https://nginx.org/keys/nginx_signing.key \
                 | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
                 || warn "Nginx GPG key download failed, proceeding without verification"
             echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-https://mirrors.aliyun.com/nginx/packages/ubuntu $(lsb_release -cs) nginx" \
+http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" \
                 > /etc/apt/sources.list.d/nginx.list
-            echo "Package: *\nPin: origin mirrors.aliyun.com\nPin-Priority: 900\n" \
+            echo "Package: *\nPin: origin nginx.org\nPin-Priority: 900\n" \
                 > /etc/apt/preferences.d/99nginx
             apt-get update -qq
             apt-get install -y nginx
@@ -516,9 +516,10 @@ https://mirrors.aliyun.com/nginx/packages/ubuntu $(lsb_release -cs) nginx" \
             cat > /etc/yum.repos.d/nginx.repo <<'NGINX_REPO'
 [nginx-stable]
 name=nginx stable repo
-baseurl=https://mirrors.aliyun.com/nginx/packages/centos/$releasever/$basearch/
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
 enabled=1
-gpgcheck=0
+gpgcheck=1
+gpgkey=https://nginx.org/keys/nginx_signing.key
 module_hotfixes=true
 NGINX_REPO
             dnf install -y nginx
@@ -526,7 +527,7 @@ NGINX_REPO
     esac
 
     systemctl enable nginx
-    info "Nginx installed (Aliyun mirror)"
+    info "Nginx installed"
 }
 
 # ---------------------------------------------------------------------------
