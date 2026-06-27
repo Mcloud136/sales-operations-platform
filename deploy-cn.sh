@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# deploy-cn.sh - 国内部署版 (Gitee + 国内镜像源)
-# 基于 deploy.sh 修改，所有外部资源使用国内镜像
+# deploy-cn.sh - 国内一键部署脚本 (China domestic deployment)
 # Supports: Ubuntu 22.04+ (APT), CentOS 8+ / RHEL 8+ (DNF)
+# All mirrors configured for China network:
+#   APT/DNF: Aliyun | PyPI: Aliyun | PostgreSQL: Official | Valkey: Gitee mirror (source)
+#   Nginx: Aliyun | Python source: Huawei Cloud
 # Usage:
-#   bash deploy-cn.sh                    # Fresh install
-#   bash deploy-cn.sh --update            # Update from latest Gitee Release
-#   bash deploy-cn.sh --rollback <tag>   # Rollback to a specific release
+#   sudo bash deploy-cn.sh                    # Fresh install
+#   sudo bash deploy-cn.sh --update           # Update from latest release
+#   sudo bash deploy-cn.sh --rollback <tag>   # Rollback to a specific release
 #
 set -euo pipefail
 IFS=$'\n\t'
@@ -44,25 +46,16 @@ SECURE_SSL_REDIRECT="False"
 SESSION_COOKIE_SECURE="False"
 CSRF_COOKIE_SECURE="False"
 
-# Gitee (国内仓库)
-GITEE_REPO="${GITEE_REPO:-sales-operations-platform}"
+# Gitee (China mirror of GitHub)
 GITEE_OWNER="${GITEE_OWNER:-wxbns}"
+GITEE_REPO="${GITEE_REPO:-sales-operations-platform}"
 
-# PostgreSQL pinned major version (auto-installs latest patch)
+# PostgreSQL pinned version (major only, no version pinning)
 PG_MAJOR="18"
+PG_VERSION="${PG_MAJOR}"
 
 # Valkey pinned version
 VALKEY_VERSION="9.1.0"
-
-# 国内镜像源
-# PostgreSQL: try multiple sources for GPG key and APT repo
-MIRROR_PG_APT="https://apt.postgresql.org/pub/repos/apt"
-MIRROR_PG_KEY="https://www.postgresql.org/media/keys/ACCC4CF8.asc"
-MIRROR_PG_KEY_FALLBACK="https://mirrors.tuna.tsinghua.edu.cn/postgresql/repos/apt/ACCC4CF8.asc"
-MIRROR_APT="https://mirrors.aliyun.com"
-MIRROR_NGINX="https://mirrors.aliyun.com/nginx"
-MIRROR_PYTHON_SRC="https://mirrors.huaweicloud.com/python"
-MIRROR_PIP="https://mirrors.aliyun.com/pypi/simple"
 
 # Colors for output
 RED='\033[0;31m'
@@ -154,6 +147,76 @@ pkg_install_no_update() {
 }
 
 # ---------------------------------------------------------------------------
+# New: Configure domestic mirrors for China
+# ---------------------------------------------------------------------------
+configure_mirrors() {
+    info "Configuring domestic mirrors for system packages..."
+
+    case "${PKG_MANAGER}" in
+        apt)
+            if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+                # DEB822 format (Ubuntu 24.04+)
+                cp /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
+                sed -i 's|^URIs: http://archive.ubuntu.com/ubuntu|URIs: https://mirrors.aliyun.com/ubuntu|' /etc/apt/sources.list.d/ubuntu.sources
+                sed -i 's|^URIs: http://security.ubuntu.com/ubuntu|URIs: https://mirrors.aliyun.com/ubuntu|' /etc/apt/sources.list.d/ubuntu.sources
+                # Clear legacy sources.list to avoid duplicates
+                if [[ -f /etc/apt/sources.list ]]; then
+                    cp /etc/apt/sources.list /etc/apt/sources.list.bak
+                    > /etc/apt/sources.list
+                fi
+                info "APT sources configured (Aliyun mirror, DEB822 format)"
+            else
+                # Legacy format
+                cp /etc/apt/sources.list /etc/apt/sources.list.bak
+                local codename
+                codename=$(lsb_release -cs)
+                cat > /etc/apt/sources.list <<EOF
+deb https://mirrors.aliyun.com/ubuntu ${codename} main restricted universe multiverse
+deb https://mirrors.aliyun.com/ubuntu ${codename}-security main restricted universe multiverse
+deb https://mirrors.aliyun.com/ubuntu ${codename}-updates main restricted universe multiverse
+EOF
+                info "APT sources configured (Aliyun mirror, legacy format)"
+            fi
+            ;;
+        dnf)
+            # CentOS/RHEL: use Aliyun
+            sed -i 's|^mirrorlist=|#mirrorlist=|' /etc/yum.repos.d/CentOS-*.repo 2>/dev/null || true
+            sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=https://mirrors.aliyun.com|' /etc/yum.repos.d/CentOS-*.repo 2>/dev/null || true
+            info "DNF sources configured (Aliyun mirror)"
+            ;;
+    esac
+
+    info "Domestic mirrors configured"
+}
+
+# ---------------------------------------------------------------------------
+# New: Configure pip domestic mirror (Aliyun)
+# ---------------------------------------------------------------------------
+configure_pip_mirror() {
+    info "Configuring pip domestic mirror (Aliyun)..."
+
+    mkdir -p /etc/pip
+    cat > /etc/pip/pip.conf <<'EOF'
+[global]
+index-url = https://mirrors.aliyun.com/pypi/simple
+trusted-host = mirrors.aliyun.com
+EOF
+
+    # Also configure for app_user
+    local app_home
+    app_home=$(eval echo ~app_user)
+    mkdir -p "${app_home}/.config/pip"
+    cat > "${app_home}/.config/pip/pip.conf" <<'EOF'
+[global]
+index-url = https://mirrors.aliyun.com/pypi/simple
+trusted-host = mirrors.aliyun.com
+EOF
+    chown -R app_user:app_user "${app_home}/.config/pip"
+
+    info "Pip mirror configured"
+}
+
+# ---------------------------------------------------------------------------
 # Step 0: Create application directories
 # ---------------------------------------------------------------------------
 create_dirs() {
@@ -192,73 +255,10 @@ create_service_users() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1.5: Configure system package mirrors (国内镜像)
-# ---------------------------------------------------------------------------
-configure_mirrors() {
-    info "Configuring domestic mirrors for system packages..."
-
-    case "${PKG_MANAGER}" in
-        apt)
-            local codename
-            codename=$(lsb_release -cs)
-
-            # Ubuntu 24.04+ uses DEB822 format: /etc/apt/sources.list.d/ubuntu.sources
-            # Older Ubuntu uses legacy format: /etc/apt/sources.list
-            if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
-                # DEB822 format (Ubuntu 24.04+)
-                local sources_file="/etc/apt/sources.list.d/ubuntu.sources"
-                local backup="${sources_file}.bak"
-                if [[ ! -f "${backup}" ]]; then
-                    cp "${sources_file}" "${backup}"
-                fi
-
-                # Replace URIs lines with Aliyun mirror
-                sed -i "s|^URIs:.*|URIs: ${MIRROR_APT}/ubuntu|g" "${sources_file}"
-
-                # Disable legacy sources.list to avoid "configured multiple times" warnings
-                if [[ -f /etc/apt/sources.list && ! -f /etc/apt/sources.list.disabled ]]; then
-                    cp /etc/apt/sources.list /etc/apt/sources.list.disabled
-                    : > /etc/apt/sources.list
-                fi
-
-                info "APT sources configured (Aliyun mirror, DEB822 format)"
-            elif [[ -f /etc/apt/sources.list ]]; then
-                # Legacy format (Ubuntu 22.04 and older)
-                if [[ ! -f /etc/apt/sources.list.bak ]]; then
-                    cp /etc/apt/sources.list /etc/apt/sources.list.bak
-                fi
-                cat > /etc/apt/sources.list <<APT_EOF
-deb ${MIRROR_APT}/ubuntu ${codename} main restricted universe multiverse
-deb ${MIRROR_APT}/ubuntu ${codename}-updates main restricted universe multiverse
-deb ${MIRROR_APT}/ubuntu ${codename}-security main restricted universe multiverse
-deb ${MIRROR_APT}/ubuntu ${codename}-backports main restricted universe multiverse
-APT_EOF
-                info "APT sources configured (Aliyun mirror, legacy format)"
-            else
-                warn "No APT sources file found, skipping mirror configuration"
-            fi
-            ;;
-        dnf)
-            # Configure Aliyun YUM mirror
-            if [[ ! -f /etc/yum.repos.d/CentOS-Base.repo.bak ]]; then
-                cp /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.bak 2>/dev/null || true
-            fi
-
-            # Use Aliyun vault mirror for CentOS Stream / RHEL
-            sed -i 's|mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/*.repo 2>/dev/null || true
-            sed -i 's|#baseurl=https://mirror.stream.centos.org|baseurl=https://mirrors.aliyun.com/centos-stream|g' /etc/yum.repos.d/*.repo 2>/dev/null || true
-            info "DNF repos configured (Aliyun mirror)"
-            ;;
-    esac
-
-    info "Domestic mirrors configured"
-}
-
-# ---------------------------------------------------------------------------
 # Step 2: Install PostgreSQL 18 from official repository
 # ---------------------------------------------------------------------------
 install_postgresql() {
-    info "Installing PostgreSQL ${PG_MAJOR} (official APT repo)..."
+    info "Installing PostgreSQL ${PG_MAJOR}..."
 
     if command -v psql &>/dev/null && psql --version | grep -q "psql (PostgreSQL) ${PG_MAJOR}"; then
         info "PostgreSQL ${PG_MAJOR} already installed"
@@ -267,42 +267,23 @@ install_postgresql() {
 
     case "${PKG_MANAGER}" in
         apt)
-            # Add PostgreSQL official APT repository
+            # Install PostgreSQL apt repository (official apt.postgresql.org)
             pkg_install_no_update curl ca-certificates gnupg lsb-release
-
-            # Download GPG key with fallback
-            if ! curl -fsSL "${MIRROR_PG_KEY}" \
-                | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg 2>/dev/null; then
-                warn "Primary GPG key URL failed, trying fallback..."
-                curl -fsSL "${MIRROR_PG_KEY_FALLBACK}" \
-                    | gpg --batch --dearmor --yes -o /usr/share/keyrings/postgresql-keyring.gpg \
-                    || die "Failed to download PostgreSQL GPG key from all sources"
-            fi
-
+            curl -fSL --connect-timeout 30 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+                | gpg --batch --yes --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] \
-${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
+http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
                 > /etc/apt/sources.list.d/pgdg.list
             apt-get update -qq
-
-            # Verify pgdg source is available
-            if ! apt-cache show "postgresql-${PG_MAJOR}" &>/dev/null; then
-                die "PostgreSQL ${PG_MAJOR} not found in APT. pgdg repo may be unreachable. Check: cat /etc/apt/sources.list.d/pgdg.list"
-            fi
-
-            # Install PG major version
-            apt-get install -y "postgresql-${PG_MAJOR}" \
-                "postgresql-client-${PG_MAJOR}"
-            # Prevent auto-upgrades to next major version
-            echo "postgresql-${PG_MAJOR} hold" | dpkg --set-selections
+            # Install without version pin (use major version only)
+            apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}"
             ;;
         dnf)
-            # Install PostgreSQL yum repository (direct, no good Chinese mirror for PG RPM)
+            # Install PostgreSQL yum repository
             pkg_install_no_update curl
             dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-$(rpm --eval '%rhel')-x86_64/pgdg-redhat-repo-latest.noarch.rpm
             dnf -qy module disable postgresql
-            dnf install -y "postgresql${PG_MAJOR}-server" \
-                "postgresql${PG_MAJOR}-contrib" \
-                "postgresql${PG_MAJOR}-devel"
+            dnf install -y "postgresql${PG_MAJOR}-server" "postgresql${PG_MAJOR}-contrib"
             ;;
     esac
 
@@ -310,11 +291,9 @@ ${MIRROR_PG_APT} $(lsb_release -cs)-pgdg main" \
     systemctl enable postgresql
     systemctl start postgresql
 
-    # Record installed version
-    local installed_pg_version
-    installed_pg_version=$(psql --version | grep -oP '\d+\.\d+' | head -1)
-    echo "postgresql=${installed_pg_version}" >> "${VERSION_MANIFEST}"
-    info "PostgreSQL ${installed_pg_version} installed"
+    # Record version
+    echo "postgresql=${PG_MAJOR}" >> "${VERSION_MANIFEST}"
+    info "PostgreSQL ${PG_MAJOR} installed"
 }
 
 # ---------------------------------------------------------------------------
@@ -342,95 +321,72 @@ configure_postgresql() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 4: Install Valkey 9.1 from source (GitHub release)
+# Step 4: Install Valkey from source (China mirrors)
 # ---------------------------------------------------------------------------
 install_valkey() {
     info "Installing Valkey ${VALKEY_VERSION} (source build)..."
 
-    # Check if fully installed (binary + systemd + config)
+    # Fully installed check: binary + systemd + config
     if [[ -f /usr/local/bin/valkey-server ]] && \
-       systemctl -q is-enabled valkey-server 2>/dev/null && \
-       [[ -f /etc/valkey/valkey.conf ]]; then
+       [[ -f /etc/valkey/valkey.conf ]] && \
+       systemctl -q is-enabled valkey-server 2>/dev/null; then
         info "Valkey ${VALKEY_VERSION} already installed and configured"
         return
     fi
 
-    # If binary exists but service missing, skip compile and reconfigure
+    # Skip compile if binary already exists
     local need_compile=true
     if [[ -f /usr/local/bin/valkey-server ]]; then
         info "Valkey binary found, skipping compile (reconfiguring only)"
         need_compile=false
     fi
 
-    # Install build dependencies
     if [[ "${need_compile}" == "true" ]]; then
-        case "${PKG_MANAGER}" in
-            apt)
-                pkg_install_no_update build-essential pkg-config
-                ;;
-            dnf)
-                pkg_install_no_update gcc make pkg-config
-                ;;
-        esac
+        # Install build deps
+        pkg_install_no_update build-essential pkg-config
 
-        # Download and build from source
+        # Download from Gitee mirror with GitHub fallback
         local tarball="/tmp/valkey-${VALKEY_VERSION}.tar.gz"
-        local src_dir=""
-
-        if [[ ! -f "${tarball}" ]]; then
-            info "Downloading Valkey ${VALKEY_VERSION} source from Gitee mirror..."
+        curl -fSL --connect-timeout 30 --max-time 300 \
+            "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+            -o "${tarball}" || {
+            warn "Gitee mirror failed, trying GitHub..."
             curl -fSL --connect-timeout 30 --max-time 300 \
-                "https://gitee.com/mirrors/Valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-                -o "${tarball}" || {
-                warn "Gitee mirror download failed, trying GitHub..."
-                curl -fSL --connect-timeout 30 --max-time 300 \
-                    "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
-                    -o "${tarball}" || die "Failed to download Valkey ${VALKEY_VERSION} source from all mirrors"
-            }
-        fi
+                "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
+                -o "${tarball}" || die "Failed to download Valkey source"
+        }
 
-        # Verify downloaded file is a valid tarball (not HTML error page)
-        if ! file "${tarball}" | grep -qi "gzip\|tar"; then
-            rm -f "${tarball}"
-            head -5 "${tarball}" 2>/dev/null
-            die "Downloaded file is not a valid tarball. Check URL or network."
-        fi
+        # Validate tarball
+        file "${tarball}" | grep -qi "gzip\|tar" || die "Downloaded file is not a valid tarball"
 
-        # Clean up any previous extraction
-        rm -rf /tmp/valkey-build-*
-        mkdir -p /tmp/valkey-build-${VALKEY_VERSION}
-        tar -xzf "${tarball}" -C /tmp/valkey-build-${VALKEY_VERSION} --strip-components=1
+        # Extract to separate build dir (NOT /tmp/valkey-* which would match tarball name)
+        local build_dir="/tmp/valkey-build-${VALKEY_VERSION}"
+        rm -rf "${build_dir}"
+        mkdir -p "${build_dir}"
+        tar -xzf "${tarball}" -C "${build_dir}" --strip-components=1
 
-        src_dir="/tmp/valkey-build-${VALKEY_VERSION}"
-        if [[ ! -f "${src_dir}/src/Makefile" ]]; then
-            ls -la "${src_dir}/" 2>/dev/null
-            die "Valkey source missing Makefile after extraction"
-        fi
-        info "Valkey source extracted to: ${src_dir}"
+        [[ -f "${build_dir}/src/Makefile" ]] || die "Missing Makefile after extraction"
 
-        cd "${src_dir}"
+        cd "${build_dir}"
         make -j"$(nproc)" BUILD_TLS=no 2>&1 | tail -5 || die "Valkey compilation failed"
         make install PREFIX=/usr/local
-
         cd /
-        rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
+
+        # Cleanup (tarball is local to this block)
+        rm -rf "${build_dir}" "${tarball}"
     fi
 
-    # Create valkey user
+    # Create valkey user (if not exists)
     if ! id valkey &>/dev/null; then
-        useradd -r -m -d /var/lib/valkey -s /usr/sbin/nologin -c "Valkey Server" valkey
+        useradd -r -m -d /var/lib/valkey -s /usr/sbin/nologin valkey
     fi
 
     # Create directories
     mkdir -p /etc/valkey /var/lib/valkey /var/log/valkey "${VALKEY_SOCK_DIR}"
     chown -R valkey:valkey /var/lib/valkey /var/log/valkey
 
-    # Symlink binaries
-    ln -sf /usr/local/bin/valkey-server /usr/local/bin/valkey-server
-    ln -sf /usr/local/bin/valkey-cli /usr/local/bin/valkey-cli
-
     # Create systemd service
-    cat > /etc/systemd/system/valkey-server.service <<'VKEY_SERVICE'
+    cat > /etc/systemd/system/valkey-server.service <<'EOF'
 [Unit]
 Description=Valkey In-Memory Data Store
 After=network.target
@@ -449,18 +405,10 @@ RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target
-VKEY_SERVICE
+EOF
 
-    # Cleanup temp build files (only if we compiled)
-    if [[ "${need_compile}" == "true" ]]; then
-        cd /
-        rm -rf "/tmp/valkey-build-${VALKEY_VERSION}" "${tarball}"
-    fi
-
-    # Configure Valkey
+    # Create valkey.conf
     local valkey_conf="/etc/valkey/valkey.conf"
-    mkdir -p /etc/valkey
-
     cat > "${valkey_conf}" <<'VAKEY_EOF'
 # Valkey configuration - Sales Operations Platform
 # Generated by deploy-cn.sh
@@ -472,9 +420,13 @@ unixsocket /var/run/valkey/valkey.sock
 unixsocketperm 770
 
 # Per-database ACLs
+# User "cache_user" can only access db 0 (cache)
+# User "celery_user" can only access db 1 (broker)
+# User "session_user" can only access db 2 (sessions)
 aclfile /etc/valkey/users.acl
 
 # Memory (will be tuned by deploy-cn.sh based on total RAM)
+# maxmemory is set dynamically below
 
 # Persistence
 save 900 1
@@ -513,18 +465,18 @@ ACL_EOF
     # Fix ownership and permissions
     chown -R valkey:valkey /etc/valkey
     chmod 640 /etc/valkey/users.acl
-    mkdir -p /var/lib/valkey /var/log/valkey
     chown -R valkey:valkey /var/lib/valkey /var/log/valkey
     chmod 770 "${VALKEY_SOCK_DIR}"
 
     # Ensure valkey user can write to socket dir
     usermod -aG app_user valkey
 
+    systemctl daemon-reload
     systemctl enable valkey-server
     systemctl start valkey-server
 
     echo "valkey=${VALKEY_VERSION}" >> "${VERSION_MANIFEST}"
-    info "Valkey ${VALKEY_VERSION} installed with per-db ACLs"
+    info "Valkey ${VALKEY_VERSION} installed with per-db ACLs (source build)"
 }
 
 # ---------------------------------------------------------------------------
@@ -541,10 +493,10 @@ install_nginx() {
     case "${PKG_MANAGER}" in
         apt)
             pkg_install_no_update curl ca-certificates gnupg lsb-release
-            curl -fsSL https://nginx.org/keys/nginx_signing.key \
-                | gpg --batch --dearmor --yes -o /usr/share/keyrings/nginx-archive-keyring.gpg
+            curl -fSL --connect-timeout 30 https://mirrors.aliyun.com/nginx/keys/nginx_signing.key \
+                | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-${MIRROR_NGINX}/ubuntu $(lsb_release -cs) nginx" \
+https://mirrors.aliyun.com/nginx/packages/ubuntu $(lsb_release -cs) nginx" \
                 > /etc/apt/sources.list.d/nginx.list
             echo "Package: *\nPin: origin mirrors.aliyun.com\nPin-Priority: 900\n" \
                 > /etc/apt/preferences.d/99nginx
@@ -555,10 +507,10 @@ ${MIRROR_NGINX}/ubuntu $(lsb_release -cs) nginx" \
             cat > /etc/yum.repos.d/nginx.repo <<'NGINX_REPO'
 [nginx-stable]
 name=nginx stable repo
-baseurl=https://mirrors.aliyun.com/nginx/centos/$releasever/$basearch/
+baseurl=https://mirrors.aliyun.com/nginx/packages/centos/$releasever/$basearch/
 enabled=1
 gpgcheck=1
-gpgkey=https://nginx.org/keys/nginx_signing.key
+gpgkey=https://mirrors.aliyun.com/nginx/keys/nginx_signing.key
 module_hotfixes=true
 NGINX_REPO
             dnf install -y nginx
@@ -566,14 +518,14 @@ NGINX_REPO
     esac
 
     systemctl enable nginx
-    info "Nginx installed"
+    info "Nginx installed (Aliyun mirror)"
 }
 
 # ---------------------------------------------------------------------------
-# Step 6: Install Python 3.13 (Huawei Cloud mirror)
+# Step 6: Install Python 3.13
 # ---------------------------------------------------------------------------
 install_python() {
-    info "Installing Python 3.13 (domestic mirror)..."
+    info "Installing Python 3.13..."
 
     if command -v python3.13 &>/dev/null; then
         info "Python 3.13 already installed"
@@ -590,7 +542,9 @@ install_python() {
         dnf)
             pkg_install_no_update gcc make zlib-devel bzip2-devel readline-devel \
                 sqlite-devel openssl-devel tk-devel libffi-devel xz-devel
-            curl -fsSL "${MIRROR_PYTHON_SRC}/3.13.0/Python-3.13.0.tgz" \
+            # Use Huawei Cloud mirror for Python source
+            curl -fSL --connect-timeout 30 --max-time 300 \
+                "https://mirrors.huaweicloud.com/python/3.13.0/Python-3.13.0.tgz" \
                 -o /tmp/Python-3.13.0.tgz
             tar -xzf /tmp/Python-3.13.0.tgz -C /tmp
             cd /tmp/Python-3.13.0
@@ -609,64 +563,90 @@ install_python() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 6.5: Configure pip to use domestic mirror
-# ---------------------------------------------------------------------------
-configure_pip_mirror() {
-    info "Configuring pip mirror (Aliyun)..."
-
-    local pip_conf_dir="/etc/pip"
-    mkdir -p "${pip_conf_dir}"
-
-    cat > "${pip_conf_dir}/pip.conf" <<PIP_EOF
-[global]
-index-url = ${MIRROR_PIP}/
-trusted-host = mirrors.aliyun.com
-PIP_EOF
-
-    # Also configure for app_user
-    local app_pip_dir="/opt/sales-ops/.config/pip"
-    mkdir -p "${app_pip_dir}"
-    cp "${pip_conf_dir}/pip.conf" "${app_pip_dir}/pip.conf"
-    chown -R app_user:app_user "/opt/sales-ops/.config"
-
-    info "pip mirror configured (Aliyun: ${MIRROR_PIP})"
-}
-
-# ---------------------------------------------------------------------------
-# Step 7: Pull release artifacts from Gitee
+# Step 7: Pull release artifacts from Gitee (with GitHub fallback)
 # ---------------------------------------------------------------------------
 pull_release() {
     local tag="${1:-latest}"
 
-    info "Pulling release artifacts from Gitee (tag: ${tag})..."
+    info "Pulling release artifacts (tag: ${tag})..."
 
     mkdir -p "${INSTALL_DIR}"
 
-    local release_info
+    local release_info=""
+    local api_used="gitee"
+
     if [[ "${tag}" == "latest" ]]; then
-        release_info=$(curl -sL "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest")
+        release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
+            "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest") || {
+            warn "Gitee API failed, trying GitHub..."
+            api_used="github"
+            release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
+                "https://api.github.com/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest")
+        }
     else
-        release_info=$(curl -sL "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/tags/${tag}")
+        release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
+            "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/tags/${tag}") || {
+            warn "Gitee API failed, trying GitHub..."
+            api_used="github"
+            release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
+                "https://api.github.com/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/tags/${tag}")
+        }
     fi
 
-    local release_tag
-    release_tag=$(echo "${release_info}" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+    if [[ -z "${release_info}" ]]; then
+        die "Failed to fetch release info from both Gitee and GitHub"
+    fi
+
+    local release_tag=""
+    local asset_url_prefix=""
+
+    if [[ "${api_used}" == "gitee" ]]; then
+        # Gitee API uses different field names
+        release_tag=$(echo "${release_info}" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [[ -z "${release_tag}" ]]; then
+            release_tag=$(echo "${release_info}" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+        fi
+        asset_url_prefix="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${release_tag}"
+    else
+        # GitHub API - try python3 first, fallback to grep
+        if command -v python3 &>/dev/null; then
+            release_tag=$(echo "${release_info}" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+        else
+            release_tag=$(echo "${release_info}" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+        fi
+        asset_url_prefix="https://github.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${release_tag}"
+    fi
+
+    if [[ -z "${release_tag}" ]]; then
+        die "Failed to parse release tag from API response"
+    fi
+
     local release_dir="${INSTALL_DIR}/${release_tag}"
     mkdir -p "${release_dir}"
 
     # Download assets
     for asset_name in frontend-dist.zip backend-dist.tar.gz checksums.sha256; do
-        local download_url
-        download_url=$(echo "${release_info}" | python3 -c "
+        local browser_url=""
+        if [[ "${api_used}" == "gitee" ]]; then
+            # Gitee: construct URL directly (assets use standard naming)
+            browser_url="${asset_url_prefix}/${asset_name}"
+        elif command -v python3 &>/dev/null; then
+            browser_url=$(echo "${release_info}" | python3 -c "
 import sys, json
 assets = json.load(sys.stdin).get('assets', [])
 for a in assets:
     if a['name'] == '${asset_name}':
-        print(a.get('browser_download_url', a.get('download_url', '')))
+        print(a['browser_download_url'])
         break
 ")
+        else
+            # Grep-based extraction for GitHub JSON
+            browser_url=$(echo "${release_info}" | \
+                grep -o "\"browser_download_url\":\"[^\"]*${asset_name}\"" | \
+                head -1 | cut -d'"' -f4)
+        fi
 
-        if [[ -z "${download_url}" ]]; then
+        if [[ -z "${browser_url}" ]]; then
             warn "Asset '${asset_name}' not found in release"
             continue
         fi
@@ -675,7 +655,7 @@ for a in assets:
         if [[ -f "${dest}" ]]; then
             info "Asset '${asset_name}' already downloaded"
         else
-            curl -fsSL "${download_url}" -o "${dest}"
+            curl -fSL --connect-timeout 30 --max-time 600 "${browser_url}" -o "${dest}"
             info "Downloaded '${asset_name}'"
         fi
     done
@@ -700,7 +680,7 @@ for a in assets:
 }
 
 # ---------------------------------------------------------------------------
-# Step 8: Create virtual environment and install dependencies (pip mirror)
+# Step 8: Create virtual environment and install dependencies
 # ---------------------------------------------------------------------------
 setup_venv() {
     info "Setting up Python virtual environment..."
@@ -714,14 +694,12 @@ setup_venv() {
         info "Created virtual environment at ${venv_dir}"
     fi
 
-    # Install dependencies with pip mirror
+    # Install dependencies with --require-hashes
     if [[ -f "${CURRENT_LINK}/backend/requirements.txt" ]]; then
-        "${venv_dir}/bin/pip" install --upgrade pip setuptools wheel \
-            -i "${MIRROR_PIP}/" --trusted-host mirrors.aliyun.com
+        "${venv_dir}/bin/pip" install --upgrade pip setuptools wheel
         "${venv_dir}/bin/pip" install --require-hashes \
-            -r "${CURRENT_LINK}/backend/requirements.txt" \
-            -i "${MIRROR_PIP}/" --trusted-host mirrors.aliyun.com
-        info "Python dependencies installed (--require-hashes, mirror: Aliyun)"
+            -r "${CURRENT_LINK}/backend/requirements.txt"
+        info "Python dependencies installed (--require-hashes, Aliyun PyPI mirror)"
     else
         warn "requirements.txt not found, skipping pip install"
     fi
@@ -738,6 +716,7 @@ generate_local_settings() {
 
     if [[ ! -f "${template}" ]]; then
         warn "Template not found at ${template}, generating inline..."
+        # Inline template if repo template not present
         template=""
     fi
 
@@ -865,6 +844,9 @@ django_setup() {
     sudo -u app_user DJANGO_SETTINGS_MODULE=config.settings.local \
         "${APP_DIR}/venv/bin/python" "${backend_dir}/manage.py" collectstatic --no-input
 
+    # NOTE: Superuser creation is now handled by the web-based Setup Wizard.
+    # After deployment, visit http://$(hostname -f)/setup to initialize the system.
+
     info "Django setup complete"
 }
 
@@ -887,12 +869,15 @@ deploy_frontend() {
 install_systemd_services() {
     info "Installing systemd service files..."
 
+    # Determine venv path for ExecStart (may be symlinked)
     local venv_bin="${APP_DIR}/venv/bin"
     local backend_dir="${CURRENT_LINK}/backend"
 
+    # Detect CPU count for Uvicorn workers
     local workers
     workers=$(python3 -c "import os; print(max(2, min(8, os.cpu_count() or 4)))")
 
+    # sales-ops-backend.service
     cat > /etc/systemd/system/sales-ops-backend.service <<EOF
 [Unit]
 Description=Sales Ops Backend (Uvicorn)
@@ -924,6 +909,7 @@ EnvironmentFile=${backend_dir}/.env
 WantedBy=multi-user.target
 EOF
 
+    # sales-ops-celery.service
     cat > /etc/systemd/system/sales-ops-celery.service <<EOF
 [Unit]
 Description=Sales Ops Celery Worker
@@ -954,6 +940,7 @@ EnvironmentFile=${backend_dir}/.env
 WantedBy=multi-user.target
 EOF
 
+    # sales-ops-celery-beat.service
     cat > /etc/systemd/system/sales-ops-celery-beat.service <<EOF
 [Unit]
 Description=Sales Ops Celery Beat (Scheduler)
@@ -981,6 +968,7 @@ EnvironmentFile=${backend_dir}/.env
 WantedBy=multi-user.target
 EOF
 
+    # Set permissions on socket dir
     chmod 775 "${SOCKET_DIR}"
     setfacl -m u:www-data:rx "${SOCKET_DIR}" 2>/dev/null || true
 
@@ -1048,13 +1036,13 @@ memory_tuning() {
     # PostgreSQL shared_buffers = 30% of RAM
     local pg_shared_buffers_mb=$((total_ram_gb * 307))
     if [[ ${pg_shared_buffers_mb} -gt 16384 ]]; then
-        pg_shared_buffers_mb=16384
+        pg_shared_buffers_mb=16384  # Cap at 16GB
     fi
 
     # Valkey maxmemory = 20% of RAM
     local valkey_maxmemory_mb=$((total_ram_gb * 204))
     if [[ ${valkey_maxmemory_mb} -gt 8192 ]]; then
-        valkey_maxmemory_mb=8192
+        valkey_maxmemory_mb=8192  # Cap at 8GB
     fi
 
     local valkey_maxmemory_bytes=$((valkey_maxmemory_mb * 1024 * 1024))
@@ -1063,6 +1051,7 @@ memory_tuning() {
     local valkey_conf="/etc/valkey/valkey.conf"
     if [[ -f "${valkey_conf}" ]]; then
         sed -i "s/^# maxmemory.*/maxmemory ${valkey_maxmemory_bytes}/" "${valkey_conf}"
+        # If no line matched, append
         grep -q "^maxmemory " "${valkey_conf}" || \
             echo "maxmemory ${valkey_maxmemory_bytes}" >> "${valkey_conf}"
         systemctl restart valkey-server
@@ -1116,6 +1105,7 @@ SYSCTL_EOF
 
     sysctl --system > /dev/null 2>&1
 
+    # Record tuning
     cat >> "${VERSION_MANIFEST}" <<VERSION_EOF
 pg_shared_buffers=${pg_shared_buffers_mb}MB
 valkey_maxmemory=${valkey_maxmemory_mb}MB
@@ -1133,6 +1123,7 @@ register_backup_cron() {
 
     local cron_entry="0 2 * * * root ${CURRENT_LINK}/scripts/backup.sh >> ${LOG_DIR}/backup.log 2>&1"
 
+    # Remove old entry if exists
     crontab -l 2>/dev/null | grep -v "backup.sh" | { cat; echo "${cron_entry}"; } | crontab -
     info "Backup cron registered"
 }
@@ -1145,6 +1136,7 @@ register_monitor_cron() {
 
     local cron_entry="*/5 * * * * root ${CURRENT_LINK}/scripts/monitor.sh >> ${LOG_DIR}/monitor.log 2>&1"
 
+    # Remove old entry if exists
     crontab -l 2>/dev/null | grep -v "monitor.sh" | { cat; echo "${cron_entry}"; } | crontab -
     info "Monitor cron registered"
 }
@@ -1157,6 +1149,7 @@ start_services() {
 
     systemctl daemon-reload
 
+    # Enable and start in dependency order
     systemctl enable postgresql
     systemctl enable valkey-server
     systemctl enable sales-ops-backend
@@ -1186,6 +1179,7 @@ health_check() {
 
     local errors=0
 
+    # Check PostgreSQL
     if sudo -u postgres psql -d "${DB_NAME}" -c "SELECT 1" &>/dev/null; then
         info "  [OK] PostgreSQL"
     else
@@ -1193,13 +1187,15 @@ health_check() {
         errors=$((errors + 1))
     fi
 
-    if valkey-cli -s "${VALKEY_SOCK_DIR}/valkey.sock" -a "${VALKEY_PASSWORD}" ping 2>/dev/null | grep -q PONG; then
+    # Check Valkey
+    if /usr/local/bin/valkey-cli -s "${VALKEY_SOCK_DIR}/valkey.sock" -a "${VALKEY_PASSWORD}" ping 2>/dev/null | grep -q PONG; then
         info "  [OK] Valkey"
     else
         error "  [FAIL] Valkey"
         errors=$((errors + 1))
     fi
 
+    # Check Uvicorn socket
     sleep 3
     if [[ -S "${SOCKET_DIR}/app.sock" ]]; then
         info "  [OK] Uvicorn socket"
@@ -1208,6 +1204,7 @@ health_check() {
         errors=$((errors + 1))
     fi
 
+    # Check Nginx
     if nginx -t 2>/dev/null; then
         info "  [OK] Nginx config"
     else
@@ -1215,6 +1212,7 @@ health_check() {
         errors=$((errors + 1))
     fi
 
+    # Check systemd services
     for svc in sales-ops-backend sales-ops-celery sales-ops-celery-beat; do
         if systemctl is-active "${svc}" &>/dev/null; then
             info "  [OK] ${svc}"
@@ -1232,11 +1230,9 @@ health_check() {
     echo ""
     echo "=============================================="
     echo "  Sales Operations Platform deployed!"
-    echo "  (Gitee + 国内镜像)"
     echo "=============================================="
     echo "  Access: http://$(hostname -f)"
     echo "  DB:     ${DB_NAME}@${DB_HOST}"
-    echo "  Gitee:  https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}"
     echo "  Release: $(cat "${VERSION_MANIFEST}" | grep '^release=' | cut -d= -f2)"
     echo "=============================================="
 }
@@ -1246,18 +1242,23 @@ health_check() {
 # ---------------------------------------------------------------------------
 print_summary() {
     echo ""
-    echo "Deployment Summary (国内部署):"
+    echo "Deployment Summary (deploy-cn.sh):"
     echo "  OS:           ${OS_NAME}"
     echo "  App Dir:      ${APP_DIR}"
     echo "  Release:      $(readlink "${CURRENT_LINK}")"
-    echo "  Gitee Repo:   https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}"
-    echo "  PostgreSQL:   $(psql --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo 'N/A')"
-    echo "  Valkey:       ${VALKEY_VERSION}"
-    echo "  Nginx:        Aliyun mirror"
+    echo "  PostgreSQL:   ${PG_MAJOR} (official apt.postgresql.org)"
+    echo "  Valkey:       ${VALKEY_VERSION} (source build, Gitee mirror)"
     echo "  Python:       $(python3.13 --version 2>&1)"
-    echo "  pip Mirror:   ${MIRROR_PIP}"
     echo "  Socket Dir:   ${SOCKET_DIR}"
     echo "  Valkey Socket: ${VALKEY_SOCK_DIR}/valkey.sock"
+    echo ""
+    echo "  Mirrors configured:"
+    echo "    APT/DNF:     Aliyun (mirrors.aliyun.com)"
+    echo "    PyPI:        Aliyun (mirrors.aliyun.com/pypi/simple)"
+    echo "    Nginx:       Aliyun (mirrors.aliyun.com/nginx)"
+    echo "    Python src:  Huawei Cloud (mirrors.huaweicloud.com)"
+    echo "    Valkey src:  Gitee mirror (gitee.com/mirrors/Valkey)"
+    echo "    Releases:    Gitee (gitee.com/${GITEE_OWNER}/${GITEE_REPO})"
     echo ""
     echo "Credentials (SAVE THESE):"
     echo "  DB User:      ${DB_USER}"
@@ -1276,11 +1277,11 @@ print_summary() {
 }
 
 # ---------------------------------------------------------------------------
-# Update mode
+# Update mode: pull latest and redeploy
 # ---------------------------------------------------------------------------
 do_update() {
     require_root
-    info "Starting update mode (Gitee)..."
+    info "Starting update mode..."
     detect_os
     pull_release "latest"
     setup_venv
@@ -1325,7 +1326,9 @@ do_rollback() {
 # ---------------------------------------------------------------------------
 do_fresh_install() {
     require_root
-    info "Starting fresh installation of Sales Operations Platform (国内部署)..."
+    info "Starting fresh installation of Sales Operations Platform (China domestic)..."
+    info "This will install PostgreSQL, Valkey, Nginx, and configure the application."
+    info "All mirrors are configured for China network."
     echo ""
 
     detect_os
@@ -1343,7 +1346,7 @@ do_fresh_install() {
     configure_pip_mirror
 
     info ""
-    info "=== Pulling Release Artifacts (Gitee) ==="
+    info "=== Pulling Release Artifacts ==="
     pull_release "latest"
 
     info ""
@@ -1383,13 +1386,21 @@ main() {
             do_rollback "${2:-}"
             ;;
         --help|-h)
-            echo "Usage: bash deploy-cn.sh [OPTIONS]"
+            echo "Usage: sudo bash deploy-cn.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  (none)        Fresh install"
-            echo "  --update      Update to latest release from Gitee"
+            echo "  (none)        Fresh install (China mirrors)"
+            echo "  --update      Update to latest release (Gitee/GitHub)"
             echo "  --rollback <tag>  Rollback to specific release"
             echo "  --help        Show this help"
+            echo ""
+            echo "China Mirrors:"
+            echo "  APT/DNF:     Aliyun (mirrors.aliyun.com)"
+            echo "  PyPI:        Aliyun (mirrors.aliyun.com/pypi/simple)"
+            echo "  Nginx:       Aliyun (mirrors.aliyun.com/nginx)"
+            echo "  Python src:  Huawei Cloud (mirrors.huaweicloud.com)"
+            echo "  Valkey src:  Gitee mirror (gitee.com/mirrors/Valkey)"
+            echo "  Releases:    Gitee (gitee.com/${GITEE_OWNER}/${GITEE_REPO})"
             echo ""
             echo "Environment Variables:"
             echo "  DB_NAME         Database name (default: salesops)"
@@ -1398,14 +1409,8 @@ main() {
             echo "  VALKEY_PASSWORD Valkey password (auto-generated)"
             echo "  DJANGO_SECRET_KEY Django secret key (auto-generated)"
             echo "  ALLOWED_HOSTS   Comma-separated hosts"
-            echo "  GITEE_OWNER     Gitee user/org (default: wxbns)"
+            echo "  GITEE_OWNER     Gitee org/user (default: wxbns)"
             echo "  GITEE_REPO      Gitee repository name (default: sales-operations-platform)"
-            echo ""
-            echo "Domestic Mirrors Used:"
-            echo "  PostgreSQL APT: ${MIRROR_PG_APT}"
-            echo "  Nginx:          ${MIRROR_NGINX}"
-            echo "  Python Source:  ${MIRROR_PYTHON_SRC}"
-            echo "  pip:            ${MIRROR_PIP}"
             ;;
         *)
             do_fresh_install
