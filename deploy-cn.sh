@@ -716,120 +716,62 @@ install_python() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 7: Pull release artifacts from Gitee (with GitHub fallback)
+# Step 7: Clone application from Gitee发行库
 # ---------------------------------------------------------------------------
 pull_release() {
-    local tag="${1:-latest}"
+    local tag="${1:-main}"
 
-    info "Pulling release artifacts (tag: ${tag})..."
+    info "Cloning application from Gitee发行库 (branch: ${tag})..."
+
+    # If already cloned, just pull latest
+    if [[ -d "${CURRENT_LINK}/.git" ]]; then
+        info "Application repo already exists, pulling latest..."
+        cd "${CURRENT_LINK}"
+        git pull --ff-only 2>/dev/null || warn "git pull failed, using existing files"
+        cd /
+        return
+    fi
 
     mkdir -p "${INSTALL_DIR}"
 
-    local release_info=""
-    local api_used="gitee"
-
-    if [[ "${tag}" == "latest" ]]; then
-        release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
-            "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest") || {
-            warn "Gitee API failed, trying GitHub..."
-            api_used="github"
-            release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
-                "https://api.github.com/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/latest")
-        }
-    else
-        release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
-            "https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/tags/${tag}") || {
-            warn "Gitee API failed, trying GitHub..."
-            api_used="github"
-            release_info=$(curl -sL --connect-timeout 30 --max-time 120 \
-                "https://api.github.com/repos/${GITEE_OWNER}/${GITEE_REPO}/releases/tags/${tag}")
-        }
+    # Clone发行库 (contains built frontend + backend)
+    local release_dir="${INSTALL_DIR}/current"
+    if [[ -d "${release_dir}" ]]; then
+        rm -rf "${release_dir}"
     fi
 
-    if [[ -z "${release_info}" ]]; then
-        die "Failed to fetch release info from both Gitee and GitHub"
-    fi
+    pkg_install_no_update git
 
-    local release_tag=""
-    local asset_url_prefix=""
-
-    if [[ "${api_used}" == "gitee" ]]; then
-        # Gitee API uses different field names
-        release_tag=$(echo "${release_info}" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
-        if [[ -z "${release_tag}" ]]; then
-            release_tag=$(echo "${release_info}" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-        fi
-        asset_url_prefix="https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${release_tag}"
-    else
-        # GitHub API - try python3 first, fallback to grep
-        if command -v python3 &>/dev/null; then
-            release_tag=$(echo "${release_info}" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-        else
-            release_tag=$(echo "${release_info}" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
-        fi
-        asset_url_prefix="https://github.com/${GITEE_OWNER}/${GITEE_REPO}/releases/download/${release_tag}"
-    fi
-
-    if [[ -z "${release_tag}" ]]; then
-        die "Failed to parse release tag from API response"
-    fi
-
-    local release_dir="${INSTALL_DIR}/${release_tag}"
-    mkdir -p "${release_dir}"
-
-    # Download assets
-    for asset_name in frontend-dist.zip backend-dist.tar.gz checksums.sha256; do
-        local browser_url=""
-        if [[ "${api_used}" == "gitee" ]]; then
-            # Gitee: construct URL directly (assets use standard naming)
-            browser_url="${asset_url_prefix}/${asset_name}"
-        elif command -v python3 &>/dev/null; then
-            browser_url=$(echo "${release_info}" | python3 -c "
-import sys, json
-assets = json.load(sys.stdin).get('assets', [])
-for a in assets:
-    if a['name'] == '${asset_name}':
-        print(a['browser_download_url'])
-        break
-")
-        else
-            # Grep-based extraction for GitHub JSON
-            browser_url=$(echo "${release_info}" | \
-                grep -o "\"browser_download_url\":\"[^\"]*${asset_name}\"" | \
-                head -1 | cut -d'"' -f4)
-        fi
-
-        if [[ -z "${browser_url}" ]]; then
-            warn "Asset '${asset_name}' not found in release"
-            continue
-        fi
-
-        local dest="${release_dir}/${asset_name}"
-        if [[ -f "${dest}" ]]; then
-            info "Asset '${asset_name}' already downloaded"
-        else
-            curl -fSL --connect-timeout 30 --max-time 600 "${browser_url}" -o "${dest}"
-            info "Downloaded '${asset_name}'"
-        fi
-    done
-
-    # Verify checksums
-    if [[ -f "${release_dir}/checksums.sha256" ]]; then
-        (cd "${release_dir}" && sha256sum -c checksums.sha256) || die "Checksum verification failed!"
-        info "Checksums verified"
-    fi
-
-    # Extract
-    mkdir -p "${release_dir}/frontend"
-    mkdir -p "${release_dir}/backend"
-    unzip -o "${release_dir}/frontend-dist.zip" -d "${release_dir}/frontend"
-    tar -xzf "${release_dir}/backend-dist.tar.gz" -C "${release_dir}/backend"
+    # Try Gitee first, fallback to GitHub
+    git clone --depth 1 --branch "${tag}" \
+        "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git" \
+        "${release_dir}" 2>/dev/null || {
+        warn "Gitee clone failed, trying GitHub..."
+        git clone --depth 1 --branch "${tag}" \
+            "https://github.com/${GITEE_OWNER}/${GITEE_REPO}.git" \
+            "${release_dir}" 2>/dev/null || \
+            die "Failed to clone from both Gitee and GitHub"
+    }
 
     # Symlink current
     ln -sfn "${release_dir}" "${CURRENT_LINK}"
 
-    echo "release=${release_tag}" >> "${VERSION_MANIFEST}"
-    info "Release ${release_tag} deployed to ${release_dir}"
+    # Locate backend and frontend directories within the repo
+    # The repo structure: backend/ contains Django code, frontend/ contains built static files
+    local backend_check="${CURRENT_LINK}/backend/manage.py"
+    local frontend_check="${CURRENT_LINK}/frontend/index.html"
+
+    if [[ ! -f "${backend_check}" ]]; then
+        warn "backend/manage.py not found at ${CURRENT_LINK}/backend/"
+        warn "The发行库 may not contain the expected directory structure"
+    fi
+    if [[ ! -f "${frontend_check}" ]]; then
+        warn "frontend/index.html not found at ${CURRENT_LINK}/frontend/"
+        warn "Frontend static files may not be present"
+    fi
+
+    echo "release=$(cd "${release_dir}" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> "${VERSION_MANIFEST}"
+    info "Application cloned to ${release_dir}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1448,7 +1390,7 @@ do_update() {
     require_root
     info "Starting update mode..."
     detect_os
-    pull_release "latest"
+    pull_release "main"
     setup_venv
     generate_local_settings
     django_setup
