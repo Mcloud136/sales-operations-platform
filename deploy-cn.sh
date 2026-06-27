@@ -742,16 +742,20 @@ pull_release() {
 
     pkg_install_no_update git
 
-    # Try Gitee first, fallback to GitHub
-    git clone --depth 1 --branch "${tag}" \
+    # Try Gitee first (public repo, no auth needed)
+    if ! git clone --depth 1 --single-branch --branch "${tag}" \
         "https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}.git" \
-        "${release_dir}" 2>/dev/null || {
-        warn "Gitee clone failed, trying GitHub..."
-        git clone --depth 1 --branch "${tag}" \
-            "https://github.com/${GITEE_OWNER}/${GITEE_REPO}.git" \
-            "${release_dir}" 2>/dev/null || \
-            die "Failed to clone from both Gitee and GitHub"
-    }
+        "${release_dir}"; then
+        die "Failed to clone from Gitee: https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}
+
+Check:
+  1. Is the repo public?
+  2. Does branch '${tag}' exist? (try: main, master)
+  3. Is the URL correct?
+
+You can override with environment variables:
+  GITEE_OWNER=your_user GITEE_REPO=your-repo sudo bash deploy-cn.sh"
+    fi
 
     # Symlink current
     ln -sfn "${release_dir}" "${CURRENT_LINK}"
