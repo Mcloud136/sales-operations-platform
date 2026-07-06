@@ -1,58 +1,63 @@
 #!/usr/bin/env bash
-# Sales Operations Platform — Deploy Script
-# Usage: sudo ./deploy.sh
-# Pulls latest from distribution repo and restarts services
-
+# Sales Operations Platform — Update Deploy Script
+# Usage: sudo ./scripts/deploy.sh
+# Pulls latest from distribution repo and restarts all services.
+# NOTE: Database migrations run automatically via sqlx::migrate!() on backend startup.
 set -euo pipefail
 
 DEPLOY_DIR="/opt/sales-ops"
-DIST_REPO="https://gitee.com/wxbns/sales-operations-platform.git"
 BACKUP_DIR="/opt/sales-ops-backups/$(date +%Y%m%d-%H%M%S)"
+SERVICE_USER="sales-ops"
 
-echo "=== Sales Operations Platform Deploy ==="
+echo "============================================="
+echo "  Sales Operations Platform — Deploy Update"
+echo "============================================="
 
-# Step 1: Backup current version
+# ── Step 1: Backup current version ──────────────────────────────
+echo ""
 if [ -d "$DEPLOY_DIR/backend" ]; then
-    echo "[1/5] Backing up current version..."
+    echo "[1/6] Backing up current version..."
     mkdir -p "$BACKUP_DIR"
     cp -r "$DEPLOY_DIR/backend" "$BACKUP_DIR/"
     cp -r "$DEPLOY_DIR/frontend" "$BACKUP_DIR/"
-    cp -r "$DEPLOY_DIR/migrations" "$BACKUP_DIR/"
+    cp "$DEPLOY_DIR/config/.env" "$BACKUP_DIR/env.bak" 2>/dev/null || true
+    cp "$DEPLOY_DIR/rbac_model.conf" "$BACKUP_DIR/" 2>/dev/null || true
     echo "  Backup saved to $BACKUP_DIR"
 else
-    echo "[1/5] No existing deployment, skipping backup."
+    echo "[1/6] No existing deployment, skipping backup."
 fi
 
-# Step 2: Pull latest from distribution repo
-echo "[2/5] Pulling latest release..."
-if [ -d "$DEPLOY_DIR/.git" ]; then
-    cd "$DEPLOY_DIR"
-    git pull origin main
-else
-    mkdir -p "$DEPLOY_DIR"
-    git clone "$DIST_REPO" "$DEPLOY_DIR"
-fi
+# ── Step 2: Pull latest from distribution repo ──────────────────
+echo "[2/6] Pulling latest release..."
+cd "$DEPLOY_DIR"
+git pull origin main || {
+    echo "  ERROR: git pull failed. Check network or repo access."
+    exit 1
+}
 
-# Step 3: Set permissions
-echo "[3/5] Setting permissions..."
+# ── Step 3: Fix CRLF line endings (Windows-created files) ────────
+echo "[3/6] Fixing CRLF line endings..."
+find "$DEPLOY_DIR" -type f \( -name "*.env" -o -name "*.sh" -o -name "*.conf" \) \
+    -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
+
+# ── Step 4: Set permissions ─────────────────────────────────────
+echo "[4/6] Setting permissions..."
 chmod +x "$DEPLOY_DIR/backend/sales-operations-platform"
 chmod +x "$DEPLOY_DIR/scripts/"*.sh 2>/dev/null || true
+chown -R "$SERVICE_USER:$SERVICE_USER" "$DEPLOY_DIR"
 
-# Step 4: Reload systemd (in case service file changed) + restart backend
-# Note: Database migrations run automatically via sqlx::migrate!() on backend startup
-echo "[4/5] Restarting backend service..."
+# ── Step 5: Reload systemd + restart services ───────────────────
+echo "[5/6] Restarting services..."
 systemctl daemon-reload
 systemctl restart sales-ops
+systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
-# Step 5: Reload nginx + health check
-echo "[5/5] Reloading nginx..."
-systemctl reload nginx
-
-# Wait for backend to start and run health check
-echo "Waiting for backend to start..."
+# ── Step 6: Health check ────────────────────────────────────────
+echo "[6/6] Waiting for backend to start..."
 for i in $(seq 1 30); do
-    if curl -sk https://localhost:8089/api/dashboard/stats > /dev/null 2>&1; then
-        echo "  Backend is healthy!"
+    HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8089/ 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        echo "  Backend is healthy! (HTTP $HTTP_CODE)"
         break
     fi
     if [ "$i" -eq 30 ]; then
@@ -63,7 +68,11 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-echo "=== Deploy complete ==="
-echo "Backend: systemctl status sales-ops"
-echo "Nginx:   systemctl status nginx"
-echo "Logs:    journalctl -u sales-ops -f"
+echo ""
+echo "============================================="
+echo "  Deploy complete!"
+echo "============================================="
+echo "Backend:  systemctl status sales-ops"
+echo "Nginx:    systemctl status nginx"
+echo "Logs:     journalctl -u sales-ops -f"
+echo "URL:      https://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8089"
