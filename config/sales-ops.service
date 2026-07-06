@@ -1,0 +1,31 @@
+[Unit]
+Description=Sales Operations Platform Backend
+After=network.target postgresql.service valkey-server.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=sales-ops
+Group=sales-ops
+WorkingDirectory=/opt/sales-ops
+ExecStart=/opt/sales-ops/backend/sales-operations-platform
+EnvironmentFile=/opt/sales-ops/config/.env
+Restart=on-failure
+RestartSec=5
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sales-ops
+# Resource limits
+LimitNOFILE=65536
+# Graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sales-ops/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
