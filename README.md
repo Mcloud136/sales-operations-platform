@@ -36,7 +36,7 @@
 
 ```bash
 # 1. 克隆发行库到目标机器
-git clone https://github.com/Mcloud136/sales-operations-platform.git /opt/sales-ops
+git clone https://gitee.com/wxbns/sales-operations-platform.git /opt/sales-ops
 
 # 2. 复制并修改环境变量
 cp /opt/sales-ops/config/.env.example /opt/sales-ops/config/.env

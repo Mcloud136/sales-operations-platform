@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DEPLOY_DIR="/opt/sales-ops"
-DIST_REPO="https://github.com/Mcloud136/sales-operations-platform.git"
+DIST_REPO="https://gitee.com/wxbns/sales-operations-platform.git"
 BACKUP_DIR="/opt/sales-ops-backups/$(date +%Y%m%d-%H%M%S)"
 
 echo "=== Sales Operations Platform Deploy ==="
