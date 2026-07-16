@@ -1,0 +1,10 @@
+ALTER TABLE contracts DROP COLUMN IF EXISTS project_name;
+ALTER TABLE contracts DROP COLUMN IF EXISTS amount;
+ALTER TABLE contracts DROP COLUMN IF EXISTS payment_amount;
+ALTER TABLE contracts DROP COLUMN IF EXISTS invoice_amount;
+ALTER TABLE contracts DROP COLUMN IF EXISTS warranty_period;
+ALTER TABLE contracts DROP COLUMN IF EXISTS warranty_ratio;
+ALTER TABLE contracts DROP COLUMN IF EXISTS warranty_amount;
+ALTER TABLE contracts DROP COLUMN IF EXISTS warranty_guarantee;
+ALTER TABLE contracts DROP COLUMN IF EXISTS cost_amount;
+ALTER TABLE contracts DROP COLUMN IF EXISTS gross_profit;

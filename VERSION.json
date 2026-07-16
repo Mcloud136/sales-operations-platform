@@ -1,6 +1,1 @@
-{
-  "commit": "961ce1388e5458c4b11ce837f81fe330a54832ed",
-  "branch": "main",
-  "build_time": "2026-07-12T22:49:31Z",
-  "run_id": "29212086423"
-}
+{"commit":"14442fd","branch":"main","build_time":"2026-07-06T12:00:00Z","features":["通知中心","合同表单重写","后台定时worker","跟进优化","部门变更修复","管理员重置密码"]}
