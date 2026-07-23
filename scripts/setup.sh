@@ -147,20 +147,26 @@ fi
 
 mkdir -p /var/lib/seaweedfs/{master,volume,filer} /var/log/seaweedfs /etc/seaweedfs
 
+# S5: 随机生成 SeaweedFS S3 Secret Key（避免硬编码弱密钥）
+S3_SECRET_KEY=$(openssl rand -hex 32)
+S3_ACCESS_KEY="sales_ops_access_key"
+
 # S3 gateway config
-cat > /etc/seaweedfs/s3.json << 'S3EOF'
+cat > /etc/seaweedfs/s3.json << S3EOF
 {
   "identities": [
     {
       "name": "sales_ops",
       "credentials": [
-        { "accessKey": "sales_ops_access_key", "secretKey": "sales_ops_secret_key" }
+        { "accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}" }
       ],
       "actions": ["Admin", "Read", "Write", "List"]
     }
   ]
 }
 S3EOF
+chmod 600 /etc/seaweedfs/s3.json
+echo "  SeaweedFS S3 secret key generated and written to /etc/seaweedfs/s3.json"
 
 # SeaweedFS systemd services
 cat > /etc/systemd/system/seaweedfs-master.service << 'EOF'
@@ -278,11 +284,18 @@ mkdir -p "$DEPLOY_DIR/config" "$DEPLOY_DIR/logs"
 if [ ! -f "$DEPLOY_DIR/config/.env" ]; then
     cp "$DEPLOY_DIR/config/.env.production" "$DEPLOY_DIR/config/.env"
 
+    # S4: 随机生成种子管理员密码（避免硬编码弱密码 admin@123）
+    SEED_ADMIN_PASSWORD=$(openssl rand -base64 16)
+
     # Replace placeholders
     JWT_SECRET=$(openssl rand -hex 64)
     sed -i "s|CHANGE_ME_STRONG_PASSWORD|${DB_PASSWORD}|g" "$DEPLOY_DIR/config/.env"
-    sed -i "s|CHANGE_ME_STRONG_SECRET_KEY|sales_ops_secret_key|g" "$DEPLOY_DIR/config/.env"
+    # S5: 同步 SeaweedFS S3 Secret Key 到 .env
+    sed -i "s|CHANGE_ME_STRONG_SECRET_KEY|${S3_SECRET_KEY}|g" "$DEPLOY_DIR/config/.env"
     sed -i "s|CHANGE_ME_GENERATE_WITH_openssl_rand_hex_64|${JWT_SECRET}|g" "$DEPLOY_DIR/config/.env"
+    # S4: 写入随机生成的种子管理员密码
+    sed -i "s|^# SEED_ADMIN_PASSWORD=.*|SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}|g" "$DEPLOY_DIR/config/.env"
+    chmod 600 "$DEPLOY_DIR/config/.env"
 
     # Set CORS_ORIGIN to actual server IP
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
@@ -291,6 +304,8 @@ if [ ! -f "$DEPLOY_DIR/config/.env" ]; then
 
     echo "  .env configured."
 else
+    # 已存在 .env 时，从其中读取 SEED_ADMIN_PASSWORD 用于最终提示
+    SEED_ADMIN_PASSWORD=$(grep -E '^SEED_ADMIN_PASSWORD=' "$DEPLOY_DIR/config/.env" | head -n1 | cut -d'=' -f2- || true)
     echo "  .env already exists, skipping."
 fi
 
@@ -374,7 +389,13 @@ echo "  Setup Complete!"
 echo "============================================="
 echo ""
 echo "  Access: https://${SERVER_IP:-localhost}:${HTTPS_PORT}"
-echo "  Login:  admin / admin@123 (change on first login)"
+echo "  Login:  admin"
+if [ -n "${SEED_ADMIN_PASSWORD:-}" ]; then
+    echo "  初始管理员密码（首次登录后请立即修改）: ${SEED_ADMIN_PASSWORD}"
+    echo "  该密码已写入 $DEPLOY_DIR/config/.env 的 SEED_ADMIN_PASSWORD 变量"
+else
+    echo "  初始管理员密码：请查看 $DEPLOY_DIR/config/.env 中的 SEED_ADMIN_PASSWORD"
+fi
 echo ""
 echo "  Services:"
 echo "    systemctl status sales-ops"
